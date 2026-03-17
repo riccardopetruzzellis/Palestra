@@ -1,8 +1,8 @@
 // ══════════════════════════════════════════════════════════
 // STORAGE — Profile-scoped localStorage
 // ══════════════════════════════════════════════════════════
-import type { Profile, ProfileData } from "./types";
-import { emptyProfileData } from "./types";
+import type { Profile, ProfileData, ProfileInfo } from "./types";
+import { emptyProfileData, emptyProfileInfo } from "./types";
 
 const PROFILES_KEY = "gym-profiles";
 const ACTIVE_KEY = "gym-active-profile";
@@ -24,12 +24,14 @@ function save(key: string, value: unknown) {
 
 // ── Profiles ──
 const defaultProfiles: Profile[] = [
-  { id: "richi", displayName: "Richi", photoDataUrl: null },
-  { id: "giuli", displayName: "Giuli", photoDataUrl: null },
+  { id: "richi", displayName: "Richi", photoDataUrl: null, info: emptyProfileInfo },
+  { id: "giuli", displayName: "Giuli", photoDataUrl: null, info: emptyProfileInfo },
 ];
 
 export function getProfiles(): Profile[] {
-  return load<Profile[]>(PROFILES_KEY, defaultProfiles);
+  const profiles = load<Profile[]>(PROFILES_KEY, defaultProfiles);
+  // Ensure all profiles have info field (migration from older format)
+  return profiles.map(p => ({ ...p, info: p.info || emptyProfileInfo }));
 }
 
 export function saveProfiles(profiles: Profile[]) {
@@ -41,6 +43,24 @@ export function updateProfilePhoto(profileId: string, dataUrl: string) {
   const idx = profiles.findIndex(p => p.id === profileId);
   if (idx >= 0) {
     profiles[idx].photoDataUrl = dataUrl;
+    saveProfiles(profiles);
+  }
+}
+
+export function updateProfileInfo(profileId: string, info: ProfileInfo) {
+  const profiles = getProfiles();
+  const idx = profiles.findIndex(p => p.id === profileId);
+  if (idx >= 0) {
+    profiles[idx].info = info;
+    saveProfiles(profiles);
+  }
+}
+
+export function updateProfileName(profileId: string, name: string) {
+  const profiles = getProfiles();
+  const idx = profiles.findIndex(p => p.id === profileId);
+  if (idx >= 0) {
+    profiles[idx].displayName = name;
     saveProfiles(profiles);
   }
 }

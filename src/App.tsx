@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from "react";
 import type {
-  Profile, ProfileData, WorkoutPlan, PlanWeek, Exercise,
+  Profile, ProfileData, ProfileInfo, WorkoutPlan, PlanWeek, Exercise,
   WorkoutSession, CycleProgress, WeekProgress,
 } from "./types";
-import { emptyProfileData } from "./types";
+import { emptyProfileData, emptyProfileInfo } from "./types";
 import {
-  getProfiles, updateProfilePhoto, getActiveProfileId, setActiveProfileId,
+  getProfiles, updateProfilePhoto, updateProfileInfo, updateProfileName,
+  getActiveProfileId, setActiveProfileId,
   loadProfileData, saveProfileData, migrateOldData, resizeImage,
 } from "./storage";
 import { exerciseDatabase, type ExerciseDbEntry } from "./exerciseDb";
@@ -24,9 +25,11 @@ const EDB_BODY_PARTS = ["chest","back","shoulders","upper arms","lower arms","up
 // ── Context ──
 interface AppCtx {
   profileId: string;
+  profile: Profile;
   data: ProfileData;
   setData: (d: ProfileData) => void;
   save: (d: ProfileData) => void;
+  refreshProfile: () => void;
 }
 const AppContext = createContext<AppCtx>(null!);
 function useApp() { return useContext(AppContext); }
@@ -52,6 +55,14 @@ const bodyPartLabels: Record<string, string> = {
   "lower arms": "Avambracci", "upper legs": "Gambe", "lower legs": "Polpacci",
   waist: "Core", cardio: "Cardio", neck: "Collo",
 };
+
+// ── Helper: greeting by time of day ──
+function getGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "Buongiorno";
+  if (h < 18) return "Buon pomeriggio";
+  return "Buonasera";
+}
 
 // ══════════════════════════════════════════════════════════
 // APP ROOT
@@ -97,6 +108,8 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  const refreshProfile = () => setProfilesState(getProfiles());
+
   if (!activeProfileId) {
     return <ProfileSelectScreen profiles={profiles} onSelect={handleSelectProfile} onUpdatePhoto={handleUpdatePhoto} />;
   }
@@ -104,7 +117,7 @@ export default function App() {
   const profile = profiles.find(p => p.id === activeProfileId)!;
 
   return (
-    <AppContext.Provider value={{ profileId: activeProfileId, data: profileData, setData: setProfileData, save }}>
+    <AppContext.Provider value={{ profileId: activeProfileId, profile, data: profileData, setData: setProfileData, save, refreshProfile }}>
       <MainApp profile={profile} onLogout={handleLogout} />
     </AppContext.Provider>
   );
@@ -119,26 +132,31 @@ function ProfileSelectScreen({ profiles, onSelect, onUpdatePhoto }: {
   onUpdatePhoto: (id: string, file: File) => void;
 }) {
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6">
-      <div className="mb-8 text-center">
-        <h1 className="text-3xl font-black text-white tracking-tight mb-1">🏋️ GYM TRACKER</h1>
-        <p className="text-slate-400 text-sm">Seleziona il tuo profilo</p>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950 flex flex-col items-center justify-center p-6">
+      {/* Logo */}
+      <div className="mb-10 text-center">
+        <div className="w-20 h-20 mx-auto mb-4 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-2xl shadow-indigo-500/30">
+          <span className="text-4xl">🏋️</span>
+        </div>
+        <h1 className="text-3xl font-black text-white tracking-tight">MACCHELLIS GYM</h1>
+        <p className="text-slate-400 text-sm mt-1">Seleziona il tuo profilo</p>
       </div>
-      <div className="flex gap-6">
+
+      <div className="flex gap-8">
         {profiles.map(p => (
           <div key={p.id} className="flex flex-col items-center gap-3">
             <button
               onClick={() => onSelect(p.id)}
-              className="w-32 h-32 rounded-3xl bg-slate-800 border-2 border-slate-700 hover:border-indigo-500 transition-all overflow-hidden flex items-center justify-center shadow-xl hover:shadow-indigo-500/20 hover:scale-105 active:scale-95"
+              className="w-36 h-36 rounded-3xl bg-slate-800/80 border-2 border-slate-700 hover:border-indigo-500 transition-all overflow-hidden flex items-center justify-center shadow-xl hover:shadow-indigo-500/25 hover:scale-105 active:scale-95"
             >
               {p.photoDataUrl ? (
                 <img src={p.photoDataUrl} alt={p.displayName} className="w-full h-full object-cover" />
               ) : (
-                <span className="text-5xl font-black text-slate-500">{p.displayName[0]}</span>
+                <span className="text-6xl font-black text-slate-500">{p.displayName[0]}</span>
               )}
             </button>
             <span className="text-white font-bold text-lg">{p.displayName}</span>
-            <label className="text-[10px] text-indigo-400 cursor-pointer hover:text-indigo-300">
+            <label className="text-[11px] text-indigo-400 cursor-pointer hover:text-indigo-300 font-medium">
               Cambia foto
               <input type="file" accept="image/*" className="hidden"
                 onChange={e => { if (e.target.files?.[0]) onUpdatePhoto(p.id, e.target.files[0]); }} />
@@ -153,7 +171,7 @@ function ProfileSelectScreen({ profiles, onSelect, onUpdatePhoto }: {
 // ══════════════════════════════════════════════════════════
 // MAIN APP (after profile selected)
 // ══════════════════════════════════════════════════════════
-type View = "dashboard" | "plans" | "plan-editor" | "workout" | "catalog" | "history" | "changelog" | "cycle";
+type View = "dashboard" | "plans" | "plan-editor" | "workout" | "catalog" | "history" | "changelog" | "cycle" | "profile";
 
 function MainApp({ profile, onLogout }: { profile: Profile; onLogout: () => void }) {
   const { data } = useApp();
@@ -176,31 +194,28 @@ function MainApp({ profile, onLogout }: { profile: Profile; onLogout: () => void
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 pb-20">
+    <div className="min-h-screen bg-slate-900 pb-24">
       {/* Header */}
       <header className="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm border-b border-slate-700/50">
         <div className="max-w-lg mx-auto px-4 py-3">
           <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <button onClick={onLogout} className="w-8 h-8 rounded-full overflow-hidden border border-slate-600 hover:border-indigo-500 transition-colors">
+            <div className="flex items-center gap-3">
+              <button onClick={() => setView("profile")} className="w-9 h-9 rounded-full overflow-hidden border-2 border-slate-600 hover:border-indigo-500 transition-colors flex-shrink-0">
                 {profile.photoDataUrl ? (
                   <img src={profile.photoDataUrl} alt="" className="w-full h-full object-cover" />
                 ) : (
-                  <span className="flex items-center justify-center text-xs font-bold text-slate-400 bg-slate-800 w-full h-full">{profile.displayName[0]}</span>
+                  <span className="flex items-center justify-center text-sm font-bold text-slate-400 bg-slate-800 w-full h-full">{profile.displayName[0]}</span>
                 )}
               </button>
-              <h1 className="text-lg font-bold text-white">GYM TRACKER</h1>
+              <div>
+                <h1 className="text-sm font-black text-white tracking-tight leading-none">MACCHELLIS GYM</h1>
+                <p className="text-[10px] text-slate-500">{profile.displayName}</p>
+              </div>
             </div>
-            {activePlan && <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-1 rounded-full">{activePlan.name}</span>}
-          </div>
-          {/* Navigation */}
-          <div className="flex gap-1">
-            {(["dashboard", "plans", "history", "changelog"] as View[]).map(v => (
-              <button key={v} onClick={() => setView(v)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${view === v ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-white"}`}>
-                {v === "dashboard" ? "🏠 Home" : v === "plans" ? "📋 Schede" : v === "history" ? "📊 Storico" : "📝 Log"}
-              </button>
-            ))}
+            <div className="flex items-center gap-2">
+              {activePlan && <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-1 rounded-full">{activePlan.name}</span>}
+              <button onClick={onLogout} className="text-[10px] text-slate-500 hover:text-red-400 px-2 py-1">Esci</button>
+            </div>
           </div>
         </div>
       </header>
@@ -214,13 +229,185 @@ function MainApp({ profile, onLogout }: { profile: Profile; onLogout: () => void
         {view === "history" && <HistoryView />}
         {view === "changelog" && <ChangeLogView />}
         {view === "cycle" && activePlan && <CycleOverview plan={activePlan} onGoToWorkout={goToWorkout} />}
+        {view === "profile" && <ProfileView onLogout={onLogout} />}
       </div>
+
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-sm border-t border-slate-700/50 z-50">
+        <div className="max-w-lg mx-auto flex">
+          {([
+            { v: "dashboard" as View, icon: "🏠", label: "Home" },
+            { v: "plans" as View, icon: "📋", label: "Schede" },
+            { v: "history" as View, icon: "📊", label: "Storico" },
+            { v: "changelog" as View, icon: "📝", label: "Log" },
+            { v: "profile" as View, icon: "👤", label: "Profilo" },
+          ]).map(tab => (
+            <button key={tab.v} onClick={() => setView(tab.v)}
+              className={`flex-1 py-3 flex flex-col items-center gap-0.5 transition-all ${view === tab.v ? "text-indigo-400" : "text-slate-500 hover:text-slate-300"}`}>
+              <span className="text-lg">{tab.icon}</span>
+              <span className="text-[10px] font-medium">{tab.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════
-// DASHBOARD — Next step, cycle progress
+// PROFILE VIEW — Personal info, settings
+// ══════════════════════════════════════════════════════════
+function ProfileView({ onLogout }: { onLogout: () => void }) {
+  const { profileId, profile, data, refreshProfile } = useApp();
+  const [info, setInfo] = useState<ProfileInfo>(profile.info || emptyProfileInfo);
+  const [name, setName] = useState(profile.displayName);
+  const [saved, setSaved] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handleSave = () => {
+    updateProfileInfo(profileId, info);
+    updateProfileName(profileId, name);
+    refreshProfile();
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handlePhoto = async (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const resized = await resizeImage(reader.result as string, 200);
+      updateProfilePhoto(profileId, resized);
+      refreshProfile();
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Stats
+  const totalSessions = data.sessions.length;
+  const totalVolume = data.sessions.reduce((sum, s) => sum + s.exercises.reduce((eSum, ex) => eSum + ex.sets.reduce((sSum, set) => sSum + (set.completed && set.weight && set.reps ? set.weight * set.reps : 0), 0), 0), 0);
+  const totalMinutes = data.sessions.reduce((s, sess) => s + (sess.duration || 0), 0);
+  const completedCycles = data.cycleHistory.length + (data.cycleProgress?.completedAt ? 1 : 0);
+
+  return (
+    <>
+      {/* Profile header */}
+      <div className="text-center mb-6">
+        <div className="relative inline-block mb-3">
+          <button onClick={() => fileRef.current?.click()} className="w-24 h-24 rounded-full overflow-hidden border-3 border-indigo-500/50 hover:border-indigo-400 transition-colors shadow-xl shadow-indigo-500/20">
+            {profile.photoDataUrl ? (
+              <img src={profile.photoDataUrl} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full bg-slate-800 flex items-center justify-center text-3xl font-black text-slate-500">{profile.displayName[0]}</div>
+            )}
+          </button>
+          <div className="absolute -bottom-1 -right-1 w-8 h-8 bg-indigo-500 rounded-full flex items-center justify-center text-white text-sm shadow-lg">
+            📷
+          </div>
+          <input ref={fileRef} type="file" accept="image/*" className="hidden"
+            onChange={e => { if (e.target.files?.[0]) handlePhoto(e.target.files[0]); }} />
+        </div>
+        <h2 className="text-xl font-bold text-white">{profile.displayName}</h2>
+        {profile.info.goal && <p className="text-sm text-indigo-400">{profile.info.goal}</p>}
+      </div>
+
+      {/* Quick Stats */}
+      <div className="grid grid-cols-4 gap-2 mb-6">
+        <div className="bg-slate-800/80 rounded-xl p-2.5 text-center border border-slate-700/50">
+          <p className="text-lg font-bold text-white">{totalSessions}</p>
+          <p className="text-[9px] text-slate-400 uppercase">Sessioni</p>
+        </div>
+        <div className="bg-slate-800/80 rounded-xl p-2.5 text-center border border-slate-700/50">
+          <p className="text-lg font-bold text-white">{Math.round(totalVolume / 1000)}k</p>
+          <p className="text-[9px] text-slate-400 uppercase">Volume kg</p>
+        </div>
+        <div className="bg-slate-800/80 rounded-xl p-2.5 text-center border border-slate-700/50">
+          <p className="text-lg font-bold text-white">{totalMinutes}</p>
+          <p className="text-[9px] text-slate-400 uppercase">Minuti</p>
+        </div>
+        <div className="bg-slate-800/80 rounded-xl p-2.5 text-center border border-slate-700/50">
+          <p className="text-lg font-bold text-white">{completedCycles}</p>
+          <p className="text-[9px] text-slate-400 uppercase">Cicli</p>
+        </div>
+      </div>
+
+      {/* Personal Info Form */}
+      <div className="bg-slate-800/80 rounded-2xl border border-slate-700/50 p-4 mb-4">
+        <h3 className="text-sm font-bold text-white mb-3">Informazioni Personali</h3>
+        <div className="space-y-3">
+          <div>
+            <label className="text-[10px] text-slate-500 uppercase font-semibold">Nome</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-600 rounded-xl px-4 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none mt-1" />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase font-semibold">Età</label>
+              <input value={info.age} onChange={e => setInfo({ ...info, age: e.target.value })} placeholder="—"
+                className="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none mt-1 text-center" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase font-semibold">Altezza (cm)</label>
+              <input value={info.height} onChange={e => setInfo({ ...info, height: e.target.value })} placeholder="—"
+                className="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none mt-1 text-center" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase font-semibold">Peso (kg)</label>
+              <input value={info.weight} onChange={e => setInfo({ ...info, weight: e.target.value })} placeholder="—"
+                className="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none mt-1 text-center" />
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-500 uppercase font-semibold">Obiettivo</label>
+            <input value={info.goal} onChange={e => setInfo({ ...info, goal: e.target.value })} placeholder="es. Massa muscolare, Forza, Definizione..."
+              className="w-full bg-slate-900 border border-slate-600 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none mt-1" />
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-500 uppercase font-semibold">Note</label>
+            <textarea value={info.notes} onChange={e => setInfo({ ...info, notes: e.target.value })} rows={3} placeholder="Allergie, infortuni, preferenze..."
+              className="w-full bg-slate-900 border border-slate-600 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none mt-1 resize-none" />
+          </div>
+          <button onClick={handleSave}
+            className={`w-full py-3 rounded-xl font-bold text-sm transition-all ${saved ? "bg-green-500 text-white" : "bg-indigo-500 text-white hover:bg-indigo-400"}`}>
+            {saved ? "✓ Salvato!" : "Salva Modifiche"}
+          </button>
+        </div>
+      </div>
+
+      {/* Account info */}
+      <div className="bg-slate-800/80 rounded-2xl border border-slate-700/50 p-4 mb-4">
+        <h3 className="text-sm font-bold text-white mb-3">Account</h3>
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-slate-400">Schede create</span>
+            <span className="text-white font-medium">{data.plans.length}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Sessioni totali</span>
+            <span className="text-white font-medium">{totalSessions}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Cicli completati</span>
+            <span className="text-white font-medium">{completedCycles}</span>
+          </div>
+          {data.sessions.length > 0 && (
+            <div className="flex justify-between">
+              <span className="text-slate-400">Ultimo allenamento</span>
+              <span className="text-white font-medium">{new Date(data.sessions[data.sessions.length - 1].date).toLocaleDateString("it-IT")}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <button onClick={onLogout}
+        className="w-full py-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl font-bold text-sm hover:bg-red-500/20 transition-all">
+        Cambia Profilo
+      </button>
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// DASHBOARD — Enhanced with stats, progress, next workout
 // ══════════════════════════════════════════════════════════
 function DashboardView({ activePlan, onGoToWorkout, onGoToPlans, onGoToCycle }: {
   activePlan: WorkoutPlan | null;
@@ -228,19 +415,74 @@ function DashboardView({ activePlan, onGoToWorkout, onGoToPlans, onGoToCycle }: 
   onGoToPlans: () => void;
   onGoToCycle: () => void;
 }) {
-  const { data, save } = useApp();
+  const { profile, data, save } = useApp();
   const [showCycleComplete, setShowCycleComplete] = useState(false);
+
+  // Stats
+  const totalSessions = data.sessions.length;
+  const totalVolume = data.sessions.reduce((sum, s) => sum + s.exercises.reduce((eSum, ex) => eSum + ex.sets.reduce((sSum, set) => sSum + (set.completed && set.weight && set.reps ? set.weight * set.reps : 0), 0), 0), 0);
+  const totalMinutes = data.sessions.reduce((s, sess) => s + (sess.duration || 0), 0);
+
+  // Last 7 days sessions
+  const now = Date.now();
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const weekSessions = data.sessions.filter(s => new Date(s.date).getTime() > weekAgo);
+
+  // Streak calculation
+  let streak = 0;
+  if (data.sessions.length > 0) {
+    const sorted = [...data.sessions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const uniqueDays = new Set(sorted.map(s => new Date(s.date).toDateString()));
+    const today = new Date();
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      if (uniqueDays.has(d.toDateString())) streak++;
+      else if (i > 0) break; // Allow today to not have a session yet
+    }
+  }
+
+  // Greeting
+  const greeting = getGreeting();
 
   if (!activePlan) {
     return (
-      <div className="text-center py-16">
-        <p className="text-6xl mb-4">🏋️</p>
-        <h2 className="text-xl font-bold text-white mb-2">Nessuna scheda attiva</h2>
-        <p className="text-sm text-slate-400 mb-6">Crea una nuova scheda o selezionane una esistente</p>
-        <button onClick={onGoToPlans} className="px-6 py-3 bg-indigo-500 text-white rounded-xl font-bold hover:bg-indigo-400 transition-all">
-          Vai alle Schede
-        </button>
-      </div>
+      <>
+        {/* Welcome header */}
+        <div className="mb-6">
+          <h2 className="text-2xl font-black text-white">{greeting}, {profile.displayName}!</h2>
+          <p className="text-sm text-slate-400 mt-1">Inizia il tuo percorso di allenamento</p>
+        </div>
+
+        {/* Quick Stats even without plan */}
+        {totalSessions > 0 && (
+          <div className="grid grid-cols-3 gap-2 mb-6">
+            <div className="bg-gradient-to-br from-indigo-500/10 to-indigo-500/5 rounded-xl p-3 text-center border border-indigo-500/20">
+              <p className="text-2xl font-bold text-white">{totalSessions}</p>
+              <p className="text-[10px] text-slate-400 uppercase">Sessioni</p>
+            </div>
+            <div className="bg-gradient-to-br from-purple-500/10 to-purple-500/5 rounded-xl p-3 text-center border border-purple-500/20">
+              <p className="text-2xl font-bold text-white">{Math.round(totalVolume)}</p>
+              <p className="text-[10px] text-slate-400 uppercase">Volume kg</p>
+            </div>
+            <div className="bg-gradient-to-br from-blue-500/10 to-blue-500/5 rounded-xl p-3 text-center border border-blue-500/20">
+              <p className="text-2xl font-bold text-white">{totalMinutes}</p>
+              <p className="text-[10px] text-slate-400 uppercase">Minuti</p>
+            </div>
+          </div>
+        )}
+
+        <div className="text-center py-12">
+          <div className="w-20 h-20 mx-auto mb-4 bg-slate-800 rounded-2xl flex items-center justify-center border border-slate-700">
+            <span className="text-4xl">📋</span>
+          </div>
+          <h3 className="text-lg font-bold text-white mb-2">Nessuna scheda attiva</h3>
+          <p className="text-sm text-slate-400 mb-6">Crea una nuova scheda o selezionane una esistente</p>
+          <button onClick={onGoToPlans} className="px-8 py-3 bg-indigo-500 text-white rounded-xl font-bold hover:bg-indigo-400 transition-all shadow-lg shadow-indigo-500/25">
+            Vai alle Schede
+          </button>
+        </div>
+      </>
     );
   }
 
@@ -292,6 +534,63 @@ function DashboardView({ activePlan, onGoToWorkout, onGoToPlans, onGoToCycle }: 
 
   return (
     <>
+      {/* Welcome header */}
+      <div className="mb-5">
+        <h2 className="text-2xl font-black text-white">{greeting}, {profile.displayName}!</h2>
+        <p className="text-sm text-slate-400 mt-0.5">
+          {weekSessions.length > 0
+            ? `${weekSessions.length} allenament${weekSessions.length === 1 ? "o" : "i"} questa settimana`
+            : "Nessun allenamento questa settimana"
+          }
+        </p>
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-4 gap-2 mb-5">
+        <div className="bg-gradient-to-br from-indigo-500/10 to-indigo-500/5 rounded-xl p-2.5 text-center border border-indigo-500/20">
+          <p className="text-xl font-bold text-white">{totalSessions}</p>
+          <p className="text-[9px] text-indigo-300 uppercase">Sessioni</p>
+        </div>
+        <div className="bg-gradient-to-br from-purple-500/10 to-purple-500/5 rounded-xl p-2.5 text-center border border-purple-500/20">
+          <p className="text-xl font-bold text-white">{totalVolume > 1000 ? `${(totalVolume / 1000).toFixed(1)}k` : totalVolume}</p>
+          <p className="text-[9px] text-purple-300 uppercase">Volume</p>
+        </div>
+        <div className="bg-gradient-to-br from-blue-500/10 to-blue-500/5 rounded-xl p-2.5 text-center border border-blue-500/20">
+          <p className="text-xl font-bold text-white">{totalMinutes}</p>
+          <p className="text-[9px] text-blue-300 uppercase">Minuti</p>
+        </div>
+        <div className="bg-gradient-to-br from-orange-500/10 to-orange-500/5 rounded-xl p-2.5 text-center border border-orange-500/20">
+          <p className="text-xl font-bold text-white">{streak}</p>
+          <p className="text-[9px] text-orange-300 uppercase">Streak</p>
+        </div>
+      </div>
+
+      {/* Weekly activity */}
+      <div className="bg-slate-800/80 rounded-2xl border border-slate-700/50 p-4 mb-4">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase mb-3">Attività settimanale</h3>
+        <div className="flex gap-1.5 justify-between">
+          {["L", "M", "M", "G", "V", "S", "D"].map((dayLabel, i) => {
+            const today = new Date();
+            const dayOfWeek = (today.getDay() + 6) % 7; // Monday = 0
+            const targetDate = new Date(today);
+            targetDate.setDate(today.getDate() - dayOfWeek + i);
+            const dateStr = targetDate.toDateString();
+            const hasSession = data.sessions.some(s => new Date(s.date).toDateString() === dateStr);
+            const isToday = i === dayOfWeek;
+            return (
+              <div key={i} className="flex flex-col items-center gap-1.5">
+                <span className={`text-[10px] font-medium ${isToday ? "text-indigo-400" : "text-slate-500"}`}>{dayLabel}</span>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
+                  hasSession ? "bg-indigo-500 text-white" : isToday ? "bg-slate-700 border border-indigo-500/50 text-slate-400" : "bg-slate-700/50 text-slate-600"
+                }`}>
+                  {hasSession ? "✓" : <span className="text-[10px]">{targetDate.getDate()}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Cycle complete modal */}
       {(cycleComplete || showCycleComplete) && (
         <div className="bg-gradient-to-br from-green-500/20 to-emerald-500/10 border border-green-500/30 rounded-2xl p-6 mb-4 text-center">
@@ -310,17 +609,18 @@ function DashboardView({ activePlan, onGoToWorkout, onGoToPlans, onGoToCycle }: 
       {cp && cp.planId === activePlan.id && totalDays > 0 && !cycleComplete && (
         <div className="bg-slate-800/80 rounded-2xl border border-slate-700/50 p-4 mb-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-semibold text-white">Ciclo #{cp.cycleNumber}</span>
-            <button onClick={onGoToCycle} className="text-xs text-indigo-400 hover:text-indigo-300">Vedi tutto →</button>
+            <span className="text-sm font-semibold text-white">Ciclo #{cp.cycleNumber} — {activePlan.name}</span>
+            <button onClick={onGoToCycle} className="text-xs text-indigo-400 hover:text-indigo-300">Dettagli →</button>
           </div>
           <div className="flex items-center gap-3 mb-2">
             <div className="flex-1 bg-slate-700 rounded-full h-3">
-              <div className="bg-indigo-500 h-3 rounded-full transition-all" style={{ width: `${(completedDays / totalDays) * 100}%` }} />
+              <div className="bg-gradient-to-r from-indigo-500 to-purple-500 h-3 rounded-full transition-all" style={{ width: `${(completedDays / totalDays) * 100}%` }} />
             </div>
             <span className="text-xs text-slate-400 font-mono">{completedDays}/{totalDays}</span>
           </div>
+          <p className="text-[10px] text-slate-500">{Math.round((completedDays / totalDays) * 100)}% completato</p>
           {/* Week pills */}
-          <div className="flex gap-1 flex-wrap">
+          <div className="flex gap-1 flex-wrap mt-2">
             {cp.weekProgress.map((w, wi) => {
               const done = w.dayProgress.every(d => d.completed);
               const partial = w.dayProgress.some(d => d.completed);
@@ -336,31 +636,35 @@ function DashboardView({ activePlan, onGoToWorkout, onGoToPlans, onGoToCycle }: 
 
       {/* No cycle started */}
       {(!cp || cp.planId !== activePlan.id) && (
-        <div className="bg-slate-800/80 rounded-2xl border border-slate-700/50 p-6 mb-4 text-center">
-          <h3 className="text-white font-bold mb-2">Inizia il ciclo di "{activePlan.name}"</h3>
+        <div className="bg-gradient-to-br from-indigo-500/10 to-purple-500/5 rounded-2xl border border-indigo-500/20 p-6 mb-4 text-center">
+          <div className="w-14 h-14 mx-auto mb-3 bg-indigo-500/20 rounded-full flex items-center justify-center">
+            <span className="text-2xl">▶️</span>
+          </div>
+          <h3 className="text-white font-bold mb-1">Inizia il ciclo di "{activePlan.name}"</h3>
           <p className="text-xs text-slate-400 mb-4">{activePlan.weeks.length} settimane, {activePlan.weeks.reduce((s, w) => s + w.days.length, 0)} giorni totali</p>
-          <button onClick={startCycle} className="px-6 py-3 bg-indigo-500 text-white rounded-xl font-bold hover:bg-indigo-400">
-            ▶️ Inizia Ciclo
+          <button onClick={startCycle} className="px-8 py-3 bg-indigo-500 text-white rounded-xl font-bold hover:bg-indigo-400 shadow-lg shadow-indigo-500/25">
+            Inizia Ciclo
           </button>
         </div>
       )}
 
       {/* Next workout card */}
       {nextDay && !cycleComplete && cp && cp.planId === activePlan.id && (
-        <div className="bg-gradient-to-br from-indigo-500/20 to-purple-500/10 border border-indigo-500/30 rounded-2xl p-4 mb-4">
-          <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-1 font-semibold">Prossimo allenamento</p>
-          <h3 className="text-lg font-bold text-white">{nextDay.name}</h3>
+        <div className="bg-gradient-to-br from-indigo-500/15 to-purple-500/10 border border-indigo-500/30 rounded-2xl p-5 mb-4 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full -translate-y-8 translate-x-8" />
+          <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-1 font-bold">Prossimo allenamento</p>
+          <h3 className="text-xl font-bold text-white">{nextDay.name}</h3>
           <p className="text-sm text-indigo-300 mb-1">{nextDay.title}</p>
-          <p className="text-xs text-slate-400 mb-3">{nextWeek.label} · {nextDay.exercises.length} esercizi</p>
+          <p className="text-xs text-slate-400 mb-4">{nextWeek.label} · {nextDay.exercises.length} esercizi</p>
           <button onClick={() => onGoToWorkout(nextWeekIdx, nextDayIdx)}
-            className="w-full py-3 bg-indigo-500 text-white rounded-xl font-bold hover:bg-indigo-400 transition-all active:scale-[0.98]">
-            Inizia Allenamento
+            className="w-full py-3.5 bg-indigo-500 text-white rounded-xl font-bold hover:bg-indigo-400 transition-all active:scale-[0.98] shadow-lg shadow-indigo-500/25">
+            Inizia Allenamento →
           </button>
         </div>
       )}
 
       {/* Quick access to all days */}
-      <h3 className="text-sm font-semibold text-slate-400 mb-2">Tutti i giorni</h3>
+      <h3 className="text-xs font-semibold text-slate-400 uppercase mb-3">Tutti i giorni</h3>
       <div className="space-y-2">
         {activePlan.weeks.map((week, wi) => (
           <div key={week.id}>
@@ -833,7 +1137,7 @@ function WorkoutViewNew({ plan, weekIdx, dayIdx, onDone }: {
             <span className="text-xs text-indigo-400 font-mono">{completedSets}/{totalSets}</span>
           </div>
           <div className="w-full bg-slate-800 rounded-full h-2 mb-3">
-            <div className="bg-indigo-500 h-2 rounded-full transition-all" style={{ width: `${totalSets > 0 ? (completedSets / totalSets) * 100 : 0}%` }} />
+            <div className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2 rounded-full transition-all" style={{ width: `${totalSets > 0 ? (completedSets / totalSets) * 100 : 0}%` }} />
           </div>
           <div className="flex gap-2">
             <button onClick={finishWorkout} className="flex-1 py-2 bg-green-500 text-white rounded-lg text-sm font-semibold hover:bg-green-400">Termina</button>

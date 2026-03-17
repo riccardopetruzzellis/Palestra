@@ -78,10 +78,27 @@ export interface CycleProgress {
 
 // ── Profile ──
 
+export interface ProfileInfo {
+  age: string;
+  height: string;
+  weight: string;
+  goal: string;
+  notes: string;
+}
+
+export const emptyProfileInfo: ProfileInfo = {
+  age: "",
+  height: "",
+  weight: "",
+  goal: "",
+  notes: "",
+};
+
 export interface Profile {
   id: string;
   displayName: string;
   photoDataUrl: string | null;
+  info: ProfileInfo;
 }
 
 export interface ProfileData {
