@@ -683,7 +683,7 @@ function CatalogView({
   const [edbSearch, setEdbSearch] = useState("");
   const [expandedEdb, setExpandedEdb] = useState<string | null>(null);
   const [edbFullscreen, setEdbFullscreen] = useState<EdbExercise | null>(null);
-  const searchTimer = useRef<ReturnType<typeof setTimeout>>();
+  const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Fetch exercises from ExerciseDB by body part
   const fetchByBodyPart = useCallback(async (bp: string) => {

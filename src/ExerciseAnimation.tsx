@@ -400,7 +400,6 @@ function AnaTorso({ id, cx, top, h = 52, w = 42 }: { id: string; cx: number; top
 function AnaArm({ id, pts, w = 10, side = "L" }: { id: string; pts: [number, number, number, number, number, number]; w?: number; side?: "L" | "R" }) {
   const [sx, sy, ex, ey, hx, hy] = pts;
   const grad = side === "L" ? `url(#${id}-aL)` : `url(#${id}-aR)`;
-  const mult = side === "L" ? 1 : -1;
 
   // Upper arm
   const udx = ex - sx, udy = ey - sy;
