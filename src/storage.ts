@@ -1,12 +1,14 @@
 // ══════════════════════════════════════════════════════════
-// STORAGE — Profile-scoped localStorage
+// STORAGE — Profile-scoped localStorage + Cloud Sync
 // ══════════════════════════════════════════════════════════
 import type { Profile, ProfileData, ProfileInfo } from "./types";
 import { emptyProfileData, emptyProfileInfo } from "./types";
+import { saveToCloud, isSyncEnabled } from "./cloudSync";
 
 const PROFILES_KEY = "gym-profiles";
 const ACTIVE_KEY = "gym-active-profile";
 const DATA_PREFIX = "gym-profile-";
+const SETTINGS_KEY = "macchellis-settings";
 
 // ── Helpers ──
 function load<T>(key: string, fallback: T): T {
@@ -20,6 +22,10 @@ function load<T>(key: string, fallback: T): T {
 
 function save(key: string, value: unknown) {
   localStorage.setItem(key, JSON.stringify(value));
+  // Auto-sync to cloud if enabled
+  if (isSyncEnabled()) {
+    saveToCloud(key, value).catch(() => {});
+  }
 }
 
 // ── Profiles ──
@@ -30,7 +36,6 @@ const defaultProfiles: Profile[] = [
 
 export function getProfiles(): Profile[] {
   const profiles = load<Profile[]>(PROFILES_KEY, defaultProfiles);
-  // Ensure all profiles have info field (migration from older format)
   return profiles.map(p => ({ ...p, info: p.info || emptyProfileInfo }));
 }
 
@@ -77,84 +82,57 @@ export function setActiveProfileId(id: string | null) {
 // ── Profile Data ──
 export function loadProfileData(profileId: string): ProfileData {
   const data = load<ProfileData>(DATA_PREFIX + profileId, emptyProfileData);
-  // Ensure all fields exist (in case of older stored data)
-  return {
-    ...emptyProfileData,
-    ...data,
-  };
+  return { ...emptyProfileData, ...data };
 }
 
 export function saveProfileData(profileId: string, data: ProfileData) {
   save(DATA_PREFIX + profileId, data);
 }
 
+// ── Settings ──
+export function loadSettings(): unknown {
+  return load(SETTINGS_KEY, null);
+}
+
+export function saveSettings(value: unknown) {
+  save(SETTINGS_KEY, value);
+}
+
 // ── Migration from old single-user format ──
 export function migrateOldData() {
-  // Check if old data exists
   const oldSessions = localStorage.getItem("gym-sessions");
   const oldWeekA = localStorage.getItem("gym-week-a");
   if (!oldSessions && !oldWeekA) return;
 
-  // Ensure profiles exist
   if (!localStorage.getItem(PROFILES_KEY)) {
     saveProfiles(defaultProfiles);
   }
 
-  // Build plan from old week data
   try {
     const weekA = oldWeekA ? JSON.parse(oldWeekA) : null;
     const weekB = localStorage.getItem("gym-week-b") ? JSON.parse(localStorage.getItem("gym-week-b")!) : null;
 
     const weeks = [];
-    if (weekA) {
-      weeks.push({
-        id: "migrated-a",
-        label: "Settimana A",
-        days: weekA.days || [],
-      });
-    }
-    if (weekB) {
-      weeks.push({
-        id: "migrated-b",
-        label: "Settimana B",
-        days: weekB.days || [],
-      });
-    }
+    if (weekA) weeks.push({ id: "migrated-a", label: "Settimana A", days: weekA.days || [] });
+    if (weekB) weeks.push({ id: "migrated-b", label: "Settimana B", days: weekB.days || [] });
 
-    const plan = {
-      id: "migrated-plan",
-      name: "Scheda Originale",
-      createdAt: new Date().toISOString(),
-      weeks,
-    };
-
+    const plan = { id: "migrated-plan", name: "Scheda Originale", createdAt: new Date().toISOString(), weeks };
     const sessions = oldSessions ? JSON.parse(oldSessions) : [];
-    const customValues = localStorage.getItem("gym-custom-values")
-      ? JSON.parse(localStorage.getItem("gym-custom-values")!)
-      : {};
-    const changeLog = localStorage.getItem("gym-changelog")
-      ? JSON.parse(localStorage.getItem("gym-changelog")!)
-      : [];
+    const customValues = localStorage.getItem("gym-custom-values") ? JSON.parse(localStorage.getItem("gym-custom-values")!) : {};
+    const changeLog = localStorage.getItem("gym-changelog") ? JSON.parse(localStorage.getItem("gym-changelog")!) : [];
 
     const profileData: ProfileData = {
       activePlanId: plan.id,
       plans: weeks.length > 0 ? [plan] : [],
-      sessions,
-      cycleProgress: null,
-      cycleHistory: [],
-      customValues,
-      changeLog,
+      sessions, cycleProgress: null, cycleHistory: [], customValues, changeLog,
     };
 
     saveProfileData("richi", profileData);
 
-    // Clean old keys
     ["gym-sessions", "gym-week-a", "gym-week-b", "gym-custom-values",
      "gym-changelog", "gym-current-week", "gym-selected-week",
      "gym-active-workout"].forEach(k => localStorage.removeItem(k));
-  } catch {
-    // Migration failed, ignore
-  }
+  } catch { /* */ }
 }
 
 // ── Image resize helper ──
